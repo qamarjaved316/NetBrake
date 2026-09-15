@@ -1,6 +1,6 @@
 name: Build
 
-# 日常自测包：push / PR 即构建 debug APK 并作为 artifact 上传，
+# 日常自测包：push / PR 即构建 debug + release APK 并作为 artifact 上传，
 # 下载安装自测通过后，再打 v 开头的 tag 走 release.yml 正式发布。
 on:
   push:
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  debug-apk:
+  test-apk:
     runs-on: ubuntu-latest
 
     steps:
@@ -45,19 +45,40 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "value=${GITHUB_RUN_NUMBER}-$(echo "$HEAD_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug -PbuildTag=${{ steps.tag.outputs.value }} --no-daemon --stacktrace
+      # release 自测包的签名规则与 release.yml 一致：配了 secrets 用正式签名，
+      # 否则回退 debug 签名。fork 来的 PR 拿不到 secrets，同样走回退分支。
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "使用仓库配置的正式签名"
+          else
+            echo "未配置 KEYSTORE_BASE64，回退到 debug 签名"
+          fi
 
-      - name: Stage APK
+      - name: Build APKs
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleDebug assembleRelease \
+            -PbuildTag=${{ steps.tag.outputs.value }} --no-daemon --stacktrace
+
+      - name: Stage APKs
         id: stage
         run: |
-          NAME="NetBrake-debug-${{ steps.tag.outputs.value }}"
+          TAG="${{ steps.tag.outputs.value }}"
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk "dist/${NAME}.apk"
-          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/NetBrake-debug-${TAG}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/NetBrake-release-${TAG}.apk"
+          echo "name=NetBrake-${TAG}" >> "$GITHUB_OUTPUT"
           ls -lh dist
 
-      - name: Upload APK
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.stage.outputs.name }}

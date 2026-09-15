@@ -35,6 +35,10 @@ android {
             versionNameSuffix "-" + (project.findProperty('buildTag') ?: 'local')
         }
         release {
+            // 自测流水线会传 buildTag，让 release 自测包也能对上是哪次构建；
+            // 正式发布（release.yml）不传，版本名保持干净
+            def tag = project.findProperty('buildTag')
+            if (tag) versionNameSuffix "-$tag"
             minifyEnabled false
             // 有正式签名就用正式签名，否则用 debug 签名方便直接安装。
             // 注意：debug keystore 由 AGP 自动生成，不同机器/不同 CI 运行各不相同，
