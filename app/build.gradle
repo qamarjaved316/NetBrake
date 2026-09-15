@@ -11,8 +11,8 @@ android {
         applicationId "com.netbrake.app"
         minSdk 29
         targetSdk 34
-        versionCode 4
-        versionName "1.0.3"
+        versionCode 5
+        versionName "1.0.4"
     }
 
     signingConfigs {
@@ -29,6 +29,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // 测试包的版本名带上构建标识：CI 注入「run 号-commit」，本地构建标记为 local。
+            // 否则每个自测包都叫 1.0.4，装到机器上分不清是哪一次构建。
+            versionNameSuffix "-" + (project.findProperty('buildTag') ?: 'local')
+        }
         release {
             minifyEnabled false
             // 有正式签名就用正式签名，否则用 debug 签名方便直接安装。

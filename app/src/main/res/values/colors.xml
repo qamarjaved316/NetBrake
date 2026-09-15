@@ -4,4 +4,6 @@
     <color name="brand_on_primary">#FFFFFF</color>
     <color name="brand_secondary">#536DFE</color>
     <color name="ic_launcher_background">#3F51B5</color>
+    <color name="delete_red">#E53935</color>
+    <color name="delete_on_red">#FFFFFF</color>
 </resources>

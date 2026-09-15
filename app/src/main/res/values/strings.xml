@@ -37,6 +37,12 @@
     <string name="no_wifi">当前无 WiFi 网络，强制 WiFi 的应用将无法联网</string>
     <string name="no_cell">当前无移动网络，强制流量的应用将无法联网</string>
     <string name="stats_fmt">↓%1$s ↑%2$s</string>
+    <!-- 每应用「实时速率 | 限速」：↓12KB/s|300KB/s  ↑3KB/s|不限 -->
+    <string name="rate_pair_fmt">↓%1$s|%2$s  ↑%3$s|%4$s</string>
+    <string name="rate_idle">—</string>
+    <string name="delete_action">删除</string>
+    <string name="rule_deleted">已删除「%1$s」的规则</string>
+    <string name="undo">撤销</string>
     <string name="delete_confirm">删除该应用的管控规则？</string>
     <string name="block_badge">已断网</string>
     <string name="toast_add_app_first">请先添加要管控的应用</string>

@@ -2,7 +2,6 @@ package com.netbrake.app.ui
 
 import android.content.Context
 import android.view.LayoutInflater
-import android.view.View
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.netbrake.app.R
@@ -10,12 +9,15 @@ import com.netbrake.app.core.Stats
 import com.netbrake.app.data.AppEntry
 import com.netbrake.app.data.NetMode
 import com.netbrake.app.data.Rule
-import com.netbrake.app.data.RuleRepo
 import com.netbrake.app.databinding.ItemRuleBinding
-import com.netbrake.app.vpn.VpnBrakeService
 
+/**
+ * @param onToggle 单个规则开关。写库与 VPN 联动都交给 Activity 处理，
+ *                 因为「打开某个应用就要顺带打开总开关」可能需要走系统 VPN 授权。
+ */
 class RulesAdapter(
-    private val onClick: (Rule) -> Unit
+    private val onClick: (Rule) -> Unit,
+    private val onToggle: (Rule, Boolean) -> Unit
 ) : RecyclerView.Adapter<RulesAdapter.VH>() {
 
     private var items: List<Pair<Rule, AppEntry?>> = emptyList()
@@ -38,6 +40,9 @@ class RulesAdapter(
         if (items.isNotEmpty()) notifyItemRangeChanged(0, items.size, PAYLOAD_RATE)
     }
 
+    /** 供左滑删除回调定位被滑动的规则。 */
+    fun ruleAt(position: Int): Rule? = items.getOrNull(position)?.first
+
     class VH(val b: ItemRuleBinding) : RecyclerView.ViewHolder(b.root)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH =
@@ -55,7 +60,8 @@ class RulesAdapter(
 
     override fun onBindViewHolder(holder: VH, position: Int) {
         val (rule, entry) = items[position]
-        val ctx = holder.b.root.context
+        // 复用的 holder 可能残留上一次左滑的位移（删除后立刻重绑），这里归位
+        holder.b.itemForeground.translationX = 0f
         holder.b.appName.text = entry?.label ?: rule.pkg
         entry?.icon?.let { holder.b.appIcon.setImageDrawable(it) }
         holder.b.ruleSummary.text = summarize(rule)
@@ -63,30 +69,28 @@ class RulesAdapter(
 
         holder.b.ruleSwitch.setOnCheckedChangeListener(null)
         holder.b.ruleSwitch.isChecked = rule.enabled
-        holder.b.ruleSwitch.setOnCheckedChangeListener { _, checked ->
-            RuleRepo.setEnabled(rule.pkg, checked)
-            VpnBrakeService.applyRules(ctx)
-        }
-        holder.b.root.setOnClickListener { onClick(rule) }
+        holder.b.ruleSwitch.setOnCheckedChangeListener { _, checked -> onToggle(rule, checked) }
+        holder.b.itemForeground.setOnClickListener { onClick(rule) }
     }
 
-    /** 实时速率（运行中且有流量时显示）；断网规则固定显示徽标。 */
+    /**
+     * 速率行固定显示「实时速率 | 限速」两个值（↓12KB/s|300KB/s  ↑3KB/s|不限），
+     * 这样没跑流量时也能一眼看到限速配置。未运行（无 stats）时实时值显示占位符。
+     * 断网规则没有速率可言，固定显示徽标。
+     */
     private fun bindRate(holder: VH, rule: Rule) {
         val ctx = holder.b.root.context
-        val rateText: String? = if (rule.netMode == NetMode.BLOCK) {
-            ctx.getString(R.string.block_badge)
-        } else {
-            val st = stats?.stat(uidOf(ctx, rule.pkg))
-            if (st != null && (st.rxRate > 0 || st.txRate > 0)) {
-                ctx.getString(R.string.stats_fmt, fmt(st.rxRate), fmt(st.txRate))
-            } else null
+        if (rule.netMode == NetMode.BLOCK) {
+            holder.b.ruleRate.text = ctx.getString(R.string.block_badge)
+            return
         }
-        if (rateText != null) {
-            holder.b.ruleRate.visibility = View.VISIBLE
-            holder.b.ruleRate.text = rateText
-        } else {
-            holder.b.ruleRate.visibility = View.GONE
-        }
+        val st = stats?.stat(uidOf(ctx, rule.pkg))
+        val idle = ctx.getString(R.string.rate_idle)
+        holder.b.ruleRate.text = ctx.getString(
+            R.string.rate_pair_fmt,
+            if (st == null) idle else fmt(st.rxRate), limitText(rule.downLimitKBps),
+            if (st == null) idle else fmt(st.txRate), limitText(rule.upLimitKBps)
+        )
     }
 
     private fun uidOf(ctx: Context, pkg: String): Int =
@@ -102,10 +106,9 @@ class RulesAdapter(
         /** 局部刷新标记：只重绘速率一行，不动图标与开关。 */
         private const val PAYLOAD_RATE = "rate"
 
+        /** 摘要行只讲网络与丢包；限速值放到速率行与实时速率并排显示。 */
         fun summarize(rule: Rule): String {
             val parts = ArrayList<String>()
-            parts.add(if (rule.downLimitKBps <= 0) "↓不限" else "↓${fmtKBps(rule.downLimitKBps)}")
-            parts.add(if (rule.upLimitKBps <= 0) "↑不限" else "↑${fmtKBps(rule.upLimitKBps)}")
             if (rule.downLossPct > 0 || rule.upLossPct > 0) {
                 parts.add("丢${rule.downLossPct}%/${rule.upLossPct}%")
             }
@@ -119,6 +122,9 @@ class RulesAdapter(
             )
             return parts.joinToString(" · ")
         }
+
+        /** 限速展示值，0 视为不限。 */
+        fun limitText(kbps: Int): String = if (kbps <= 0) "不限" else fmtKBps(kbps)
 
         fun fmtKBps(kbps: Int): String =
             if (kbps >= 1024) String.format("%.1fMB/s", kbps / 1024.0) else "${kbps}KB/s"

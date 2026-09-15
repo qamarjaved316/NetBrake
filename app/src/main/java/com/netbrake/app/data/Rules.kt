@@ -80,6 +80,33 @@ object RuleRepo {
         byPkg(pkg)?.let { upsert(it.copy(enabled = enabled)) }
     }
 
+    /** 批量开关全部规则（总开关联动用）。 */
+    fun setAllEnabled(enabled: Boolean) {
+        setEnabledOnly(if (enabled) rules.map { it.pkg } else emptyList())
+    }
+
+    /**
+     * 只启用给定的包，其余全部关闭；用于总开关重新打开时恢复上次的选择。
+     * 走单次持久化与单次通知，避免逐条 upsert 触发 N 次列表刷新与 N 次 VPN 重建。
+     */
+    fun setEnabledOnly(pkgs: Collection<String>) {
+        val keep = pkgs.toSet()
+        synchronized(this) {
+            var changed = false
+            for (i in rules.indices) {
+                val want = rules[i].pkg in keep
+                if (rules[i].enabled != want) {
+                    rules[i] = rules[i].copy(enabled = want)
+                    changed = true
+                }
+            }
+            if (!changed) return
+            version++
+            persist()
+        }
+        notifyChanged()
+    }
+
     fun addListener(l: () -> Unit) { listeners.add(l) }
     fun removeListener(l: () -> Unit) { listeners.remove(l) }
 
