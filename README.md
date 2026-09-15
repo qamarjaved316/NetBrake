@@ -1,5 +1,9 @@
 # NetBrake — 应用级网络限制器
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/kegechen/NetBrake?include_prereleases)](https://github.com/kegechen/NetBrake/releases/latest)
+[![Android](https://img.shields.io/badge/Android-10%2B%20(API%2029)-3DDC84?logo=android&logoColor=white)](#安装)
+
 一个免 root 的 Android 弱网/流量管控工具：**按应用限制网速、模拟丢包、强制指定 WiFi 或移动数据（甚至断网）**。适合弱网测试、应用测试、流量管控等场景。
 
 ## 功能
@@ -38,9 +42,13 @@
 
 ## 安装
 
-- APK：`app-debug.apk` / `app-release.apk`（debug 签名），直接安装即可
+- 到 [Releases](https://github.com/kegechen/NetBrake/releases/latest) 下载 `NetBrake-<版本>.apk`，直接安装
 - 系统要求：**Android 10（API 29）及以上**
 - 首次开启时系统会弹出「VPN 连接请求」，请点击「确定」
+
+> Release APK 默认使用 **debug 签名**（方便免配置直接安装）。debug keystore 由构建环境自动生成，
+> 各次发布的签名并不相同，因此**跨版本升级需要先卸载旧版**。若 fork 本项目并在仓库 Secrets 中配置
+> `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`，发布流程会改用正式签名，届时可直接覆盖升级。
 
 ## 使用
 
@@ -53,11 +61,23 @@
 
 ```bash
 # Android Studio: 直接打开工程，Run 即可
-# 命令行（需 JDK 17+、Android SDK 34）：
+# 命令行（需 JDK 17+、Android SDK：platforms;android-34 与 build-tools;34.0.0）：
 ./gradlew assembleDebug
 ```
 
-国内网络环境已在 `settings.gradle` 中配置了腾讯云/阿里云镜像；Gradle wrapper 分发地址也指向腾讯镜像。
+国内网络环境已在 `settings.gradle` 中配置了阿里云/腾讯云的 Maven 镜像。
+
+## 发布
+
+推送 `v` 开头的 tag 即自动构建并发布 Release：
+
+```bash
+git tag v1.0.3
+git push origin v1.0.3
+```
+
+`.github/workflows/release.yml` 会构建 release APK、创建同名 GitHub Release，
+并把 `NetBrake-<tag>.apk` 作为附件上传（release notes 自动生成）。
 
 ## 技术说明与限制
 
@@ -97,4 +117,6 @@ app/src/main/java/com/netbrake/app/
 
 ## 许可
 
-仅供学习与研究使用。
+[MIT](LICENSE) © kegechen
+
+本工具仅提供本机网络管控能力，请在自己拥有或已获授权的设备上使用。
