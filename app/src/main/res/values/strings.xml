@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NetBrake</string>
+    <string name="app_subtitle">网络限速 · 丢包模拟 · 网络指定</string>
+    <string name="vpn_switch">启用管控</string>
+    <string name="status_stopped">未运行</string>
+    <string name="status_running">运行中 · 已管控 %1$d 个应用</string>
+    <string name="add_app">添加应用</string>
+    <string name="no_rules_hint">还没有管控任何应用\n点击「添加应用」开始</string>
+    <string name="search_app">搜索应用</string>
+    <string name="show_system">显示系统应用</string>
+    <string name="rule_edit_title">编辑规则</string>
+    <string name="net_default">跟随系统</string>
+    <string name="net_wifi">仅 WiFi</string>
+    <string name="net_cell">仅流量</string>
+    <string name="net_block">断网</string>
+    <string name="net_group">使用的网络</string>
+    <string name="down_limit">下载限速 (KB/s，0 = 不限)</string>
+    <string name="up_limit">上传限速 (KB/s，0 = 不限)</string>
+    <string name="down_loss">下载丢包率</string>
+    <string name="up_loss">上传丢包率</string>
+    <string name="presets">快速预设</string>
+    <string name="preset_free">不限速</string>
+    <string name="preset_2g">2G</string>
+    <string name="preset_3g">3G</string>
+    <string name="preset_weak">弱网</string>
+    <string name="preset_bad">恶劣</string>
+    <string name="save">保存</string>
+    <string name="delete">删除规则</string>
+    <string name="rate_now">实时 %1$s</string>
+    <string name="unlimited">不限</string>
+    <string name="traffic_fmt">%1$s/s</string>
+    <string name="notification_channel">VPN 管控服务</string>
+    <string name="notification_title">NetBrake 运行中</string>
+    <string name="notification_text">正在管控 %1$d 个应用的网络</string>
+    <string name="vpn_permission_hint">首次开启时请在系统弹窗中点击「确定」允许 VPN 连接</string>
+    <string name="no_wifi">当前无 WiFi 网络，强制 WiFi 的应用将无法联网</string>
+    <string name="no_cell">当前无移动网络，强制流量的应用将无法联网</string>
+    <string name="stats_fmt">↓%1$s ↑%2$s</string>
+    <string name="delete_confirm">删除该应用的管控规则？</string>
+    <string name="block_badge">已断网</string>
+    <string name="toast_add_app_first">请先添加要管控的应用</string>
+    <string name="loading_apps">正在加载应用列表…</string>
+    <string name="notification_text_with_rate">↓%1$s ↑%2$s · 已管控 %3$d 个应用</string>
+</resources>
