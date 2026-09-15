@@ -87,7 +87,9 @@ class NetworkHub(
         // （AbstractPlainSocketImpl 延迟到 create() 才建），此时 protect() 拿到的是
         // 无效 fd，必然返回 false，bindSocket() 同样无从生效。必须先 bind 一个
         // 任意本地端口把 fd 建出来，protect 才有意义。
-        // DatagramSocket 无参构造会立即 bind，所以 UDP（DNS）一直正常，只有 TCP 全灭。
+        // UDP 侧没这个问题：UdpFlow 用的 DatagramSocket(null) 虽然不 bind，
+        // 但 DatagramSocket(SocketAddress) 构造函数无条件 createImpl()，fd 早已存在。
+        // 注意：bind 之后本方法的任何失败路径都持有真实 fd，调用方必须负责 close。
         if (!socket.isBound) socket.bind(InetSocketAddress(0))
         when (netMode) {
             NetMode.WIFI -> {

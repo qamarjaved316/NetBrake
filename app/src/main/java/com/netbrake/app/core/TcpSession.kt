@@ -334,9 +334,9 @@ class TcpSession internal constructor(
 
     private fun startConnector() {
         val kicked = engine.submit {
+            if (closed) return@submit
+            val sock = Socket()
             try {
-                if (closed) return@submit
-                val sock = Socket()
                 engine.hub.prepareTcp(sock, rule.netMode)
                 sock.tcpNoDelay = true
                 sock.connect(InetSocketAddress(IpPacket.ipToString(dstIp), dstPort), 15000)
@@ -356,6 +356,10 @@ class TcpSession internal constructor(
                 // app 眼中连接已 ESTABLISHED，静默放弃会让它一直挂到 10 分钟空闲超时
                 if (!startSockReader(sock) || !startSockWriter(sock)) onSockBroken()
             } catch (_: Exception) {
+                // prepareTcp 会先 bind 出真实 fd，此后任何失败（无 WiFi/无蜂窝、
+                // protect 失败、connect 超时）都必须显式关闭，否则每失败一次漏一个 fd：
+                // destroy() 关的是 socket 字段，而它要到 connect 成功后才被赋值。
+                try { sock.close() } catch (_: Exception) {}
                 if (!closed) {
                     sendRst()
                     destroy()

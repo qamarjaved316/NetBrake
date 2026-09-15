@@ -41,8 +41,9 @@ class UdpFlow internal constructor(
     /** 由引擎创建后立即调用（在引擎读线程中）。 */
     fun start() {
         val kicked = engine.submit {
+            var sock: DatagramSocket? = null
             try {
-                val sock = DatagramSocket(null)
+                sock = DatagramSocket(null)
                 engine.hub.prepareUdp(sock, rule.netMode)
                 sock.connect(InetSocketAddress(IpPacket.ipToString(dstIp), dstPort))
                 synchronized(this) {
@@ -55,7 +56,9 @@ class UdpFlow internal constructor(
                 // 收发泵任一起不来就没有人搬运数据，必须立即拆流而不是留一个空壳
                 if (!startRecv(sock) || !startUpWriter(sock)) destroy()
             } catch (_: Exception) {
-                // 无法建立（如强制 WiFi 但无 WiFi）：直接标记失败，丢弃该流的所有包
+                // 无法建立（如强制 WiFi 但无 WiFi）：直接标记失败，丢弃该流的所有包。
+                // DatagramSocket(null) 已经 createImpl() 拿到 fd，必须显式关闭
+                try { sock?.close() } catch (_: Exception) {}
                 closed = true
                 engine.onFlowClosed(this)
             }

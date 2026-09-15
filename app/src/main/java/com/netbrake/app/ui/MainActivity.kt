@@ -1,6 +1,7 @@
 package com.netbrake.app.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Canvas
@@ -45,8 +46,15 @@ class MainActivity : AppCompatActivity() {
     private val vpnAuthorize = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        // 用户拒绝授权时不回滚规则开关，只把总开关显示回未运行
-        if (result.resultCode == RESULT_OK) startVpnService() else refreshStatus()
+        val masterOn = pendingMasterOn
+        pendingMasterOn = false
+        if (result.resultCode == RESULT_OK) {
+            if (masterOn) applyMasterOnRules()
+            startVpnService()
+        } else {
+            // 拒绝授权：规则一个都没动过，只把总开关显示回未运行
+            refreshStatus()
+        }
     }
 
     private val notifPermission =
@@ -71,12 +79,26 @@ class MainActivity : AppCompatActivity() {
      */
     private var pendingVpnState: Boolean? = null
 
+    private val uiPrefs by lazy { getSharedPreferences("netbrake_ui", Context.MODE_PRIVATE) }
+
     /**
      * 总开关关闭前各应用的启用状态，用于再次打开时原样恢复，
      * 否则「临时停一下再打开」会把用户特意排除的应用也打开，且不可逆。
-     * 只存在于内存中：进程被杀后再打开总开关回退到「全都管起来」。
+     *
+     * 必须落盘：关总开关会把 enabled=false 持久化，若这份备份只存在内存里，
+     * 进程被杀后再打开总开关就会退化成「全都管起来」，把用户特意排除的应用
+     * （含配了断网/限速的）静默纳入管控。
      */
-    private var enabledBeforeMasterOff: List<String>? = null
+    private var enabledBeforeMasterOff: List<String>?
+        get() = uiPrefs.getStringSet(KEY_PREV_ENABLED, null)?.toList()
+        set(value) {
+            uiPrefs.edit().apply {
+                if (value.isNullOrEmpty()) remove(KEY_PREV_ENABLED) else putStringSet(KEY_PREV_ENABLED, value.toSet())
+            }.apply()
+        }
+
+    /** 用户点开总开关但还卡在系统授权弹窗：授权确认后才动规则。 */
+    private var pendingMasterOn = false
 
     /** 服务始终没到达期望状态（如启动失败）时的兜底，防止开关一直停在假状态。 */
     private val clearPending = Runnable {
@@ -106,6 +128,10 @@ class MainActivity : AppCompatActivity() {
             pickApp.launch(Intent(this, AppPickerActivity::class.java))
         }
 
+        // 开关状态一律由 refreshStatus() 从服务状态推导；交给系统保存/恢复的话，
+        // onRestoreInstanceState 里的 setChecked 会绕过 syncingSwitch 触发用户操作分支
+        // （旋屏就可能重跑一遍 onMasterOn、甚至弹出 VPN 授权框）
+        b.vpnSwitch.isSaveEnabled = false
         b.vpnSwitch.setOnCheckedChangeListener { _, checked ->
             if (syncingSwitch) return@setOnCheckedChangeListener
             if (checked) onMasterOn() else onMasterOff()
@@ -137,14 +163,27 @@ class MainActivity : AppCompatActivity() {
             pickApp.launch(Intent(this, AppPickerActivity::class.java))
             return
         }
-        // 子开关全关时打开总开关得先恢复出可管控的应用，否则 VPN 起来也是空跑。
-        // 优先还原上次关总开关前的选择，避免把用户特意排除的应用也一并打开。
+        // 先过系统授权再改规则：用户在授权弹窗点「取消」时，不能留下被改写过的开关状态
+        val prepare = VpnService.prepare(this)
+        if (prepare != null) {
+            pendingMasterOn = true
+            vpnAuthorize.launch(prepare)
+            return
+        }
+        applyMasterOnRules()
+        startVpnService()
+    }
+
+    /**
+     * 总开关打开时恢复出可管控的应用集合：子开关全关的话 VPN 起来也是空跑。
+     * 优先还原上次关总开关前的选择，避免把用户特意排除的应用也一并打开。
+     */
+    private fun applyMasterOnRules() {
         if (RuleRepo.enabledPkgs().isEmpty()) {
             val prev = enabledBeforeMasterOff?.filter { RuleRepo.byPkg(it) != null }
             if (prev.isNullOrEmpty()) RuleRepo.setAllEnabled(true) else RuleRepo.setEnabledOnly(prev)
         }
         enabledBeforeMasterOff = null
-        startVpnFlow()
     }
 
     private fun onMasterOff() {
@@ -167,7 +206,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun syncVpnWithRules(allowStart: Boolean) {
         val anyEnabled = RuleRepo.enabledPkgs().isNotEmpty()
-        val running = VpnBrakeService.running
+        // 服务起停是异步的，pending 窗口内 running 还是旧值。按用户刚表达的意图判断，
+        // 否则会把 ACTION_APPLY 发给一个正在停止的服务，且与总开关的显示状态不一致
+        val running = pendingVpnState ?: VpnBrakeService.running
         when {
             !anyEnabled && running -> stopVpnFlow()
             // 运行中：交给服务自己判断热更新还是重建
@@ -278,13 +319,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun deleteRule(rule: Rule) {
+        val wasRunning = pendingVpnState ?: VpnBrakeService.running
         RuleRepo.remove(rule.pkg)          // 触发 ruleListener → refreshRules
         syncVpnWithRules(allowStart = false)
         val label = AppList.entryOf(this, rule.pkg)?.label ?: rule.pkg
         Snackbar.make(b.root, getString(R.string.rule_deleted, label), Snackbar.LENGTH_LONG)
             .setAction(R.string.undo) {
                 RuleRepo.upsert(rule)
-                syncVpnWithRules(allowStart = false)
+                // 撤销要回到删除前的状态：删掉最后一条启用规则会顺带停掉 VPN，
+                // 只恢复规则而不重新拉起，会留下「子开关开着、总开关却是关的」
+                syncVpnWithRules(allowStart = wasRunning)
             }
             .show()
     }
@@ -348,5 +392,9 @@ class MainActivity : AppCompatActivity() {
             b.rateText.text = ""
             adapter.submitStats(null)
         }
+    }
+
+    companion object {
+        private const val KEY_PREV_ENABLED = "enabled_before_master_off"
     }
 }
