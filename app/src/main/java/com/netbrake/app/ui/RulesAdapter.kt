@@ -27,9 +27,15 @@ class RulesAdapter(
         notifyDataSetChanged()
     }
 
+    /**
+     * 刷新实时速率数据源。由 MainActivity 的秒级轮询驱动。
+     *
+     * 只下发 [PAYLOAD_RATE] 局部刷新而非 notifyDataSetChanged：后者每秒重建整行，
+     * 会重设图标与开关监听，滚动时还会打断手势。
+     */
     fun submitStats(s: Stats?) {
         stats = s
-        notifyDataSetChanged()
+        if (items.isNotEmpty()) notifyItemRangeChanged(0, items.size, PAYLOAD_RATE)
     }
 
     class VH(val b: ItemRuleBinding) : RecyclerView.ViewHolder(b.root)
@@ -39,29 +45,21 @@ class RulesAdapter(
 
     override fun getItemCount(): Int = items.size
 
+    override fun onBindViewHolder(holder: VH, position: Int, payloads: MutableList<Any>) {
+        if (payloads.isNotEmpty() && payloads.all { it == PAYLOAD_RATE }) {
+            bindRate(holder, items[position].first)
+            return
+        }
+        super.onBindViewHolder(holder, position, payloads)
+    }
+
     override fun onBindViewHolder(holder: VH, position: Int) {
         val (rule, entry) = items[position]
         val ctx = holder.b.root.context
         holder.b.appName.text = entry?.label ?: rule.pkg
         entry?.icon?.let { holder.b.appIcon.setImageDrawable(it) }
         holder.b.ruleSummary.text = summarize(rule)
-
-        // 实时速率（运行中且有流量时显示）
-        var rateText: String? = null
-        if (rule.netMode == NetMode.BLOCK) {
-            rateText = ctx.getString(R.string.block_badge)
-        } else {
-            val st = stats?.stat(uidOf(ctx, rule.pkg))
-            if (st != null && (st.rxRate > 0 || st.txRate > 0)) {
-                rateText = ctx.getString(R.string.stats_fmt, fmt(st.rxRate), fmt(st.txRate))
-            }
-        }
-        if (rateText != null) {
-            holder.b.ruleRate.visibility = View.VISIBLE
-            holder.b.ruleRate.text = rateText
-        } else {
-            holder.b.ruleRate.visibility = View.GONE
-        }
+        bindRate(holder, rule)
 
         holder.b.ruleSwitch.setOnCheckedChangeListener(null)
         holder.b.ruleSwitch.isChecked = rule.enabled
@@ -70,6 +68,25 @@ class RulesAdapter(
             VpnBrakeService.applyRules(ctx)
         }
         holder.b.root.setOnClickListener { onClick(rule) }
+    }
+
+    /** 实时速率（运行中且有流量时显示）；断网规则固定显示徽标。 */
+    private fun bindRate(holder: VH, rule: Rule) {
+        val ctx = holder.b.root.context
+        val rateText: String? = if (rule.netMode == NetMode.BLOCK) {
+            ctx.getString(R.string.block_badge)
+        } else {
+            val st = stats?.stat(uidOf(ctx, rule.pkg))
+            if (st != null && (st.rxRate > 0 || st.txRate > 0)) {
+                ctx.getString(R.string.stats_fmt, fmt(st.rxRate), fmt(st.txRate))
+            } else null
+        }
+        if (rateText != null) {
+            holder.b.ruleRate.visibility = View.VISIBLE
+            holder.b.ruleRate.text = rateText
+        } else {
+            holder.b.ruleRate.visibility = View.GONE
+        }
     }
 
     private fun uidOf(ctx: Context, pkg: String): Int =
@@ -82,6 +99,9 @@ class RulesAdapter(
         }
 
     companion object {
+        /** 局部刷新标记：只重绘速率一行，不动图标与开关。 */
+        private const val PAYLOAD_RATE = "rate"
+
         fun summarize(rule: Rule): String {
             val parts = ArrayList<String>()
             parts.add(if (rule.downLimitKBps <= 0) "↓不限" else "↓${fmtKBps(rule.downLimitKBps)}")

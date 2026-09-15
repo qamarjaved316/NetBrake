@@ -85,13 +85,15 @@ class NetworkHub(
         when (netMode) {
             NetMode.WIFI -> {
                 val net = wifiNet ?: throw IOException("no wifi network")
-                vpn.protect(socket)
+                // protect 失败必须抛出：隧道自身的上行 socket 会被路由回 TUN 形成转发环路，
+                // 远不如一次干净的 IOException -> sendRst() 快速失败
+                if (!vpn.protect(socket)) throw IOException("protect failed")
                 net.bindSocket(socket)
                 // bindSocket 会覆盖路由，protect 语义仍在：该 socket 不再进 VPN
             }
             NetMode.CELLULAR -> {
                 val net = cellNet ?: throw IOException("no cellular network")
-                vpn.protect(socket)
+                if (!vpn.protect(socket)) throw IOException("protect failed")
                 net.bindSocket(socket)
             }
             else -> {
@@ -106,12 +108,12 @@ class NetworkHub(
         when (netMode) {
             NetMode.WIFI -> {
                 val net = wifiNet ?: throw IOException("no wifi network")
-                vpn.protect(socket)
+                if (!vpn.protect(socket)) throw IOException("protect failed")
                 net.bindSocket(socket)
             }
             NetMode.CELLULAR -> {
                 val net = cellNet ?: throw IOException("no cellular network")
-                vpn.protect(socket)
+                if (!vpn.protect(socket)) throw IOException("protect failed")
                 net.bindSocket(socket)
             }
             else -> {

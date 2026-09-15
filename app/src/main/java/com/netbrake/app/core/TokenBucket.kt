@@ -35,16 +35,22 @@ class TokenBucket(rateBytesPerSec: Long) {
     /**
      * 阻塞式：尝试获取 upTo 个令牌（至少 minTake 个才返回）。
      * 返回实际取得的数量；超时返回 0。cancelled 返回 true 时立即返回当前可得数量。
+     *
+     * minTake 会被钳到桶容量：burst = min(rate, MAX_BURST)，低于 4MB/s 的限速下
+     * 就等于 rate 本身。调用方若按「整包等待」传入大于 rate 的 minTake（例如 1KB/s
+     * 限速 + 1232 字节的 QUIC 数据报），tokens 永远追不上 minTake，
+     * 每次调用都超时返回 0——结果不是限速而是彻底黑洞。
      */
     fun acquire(upTo: Int, minTake: Int, timeoutMs: Long, cancelled: () -> Boolean): Int {
         if (rate <= 0) return upTo
         val deadline = System.nanoTime() + timeoutMs * 1_000_000
         var acquired = 0
         synchronized(lock) {
+            val need = minOf(minTake, burst.coerceAtLeast(1L).toInt())
             while (true) {
                 refillLocked()
                 val avail = tokens.toInt()
-                if (avail >= minTake) {
+                if (avail >= need) {
                     val take = minOf(upTo, avail)
                     tokens -= take
                     return acquired + take

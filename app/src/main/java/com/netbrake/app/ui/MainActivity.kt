@@ -152,6 +152,8 @@ class MainActivity : AppCompatActivity() {
             val count = RuleRepo.enabledPkgs().size
             b.statusText.text = getString(R.string.status_running, count)
             val e = EngineHolder.engine
+            // 列表里的每应用速率同样由这里驱动；不喂 stats 的话每行速率永远不显示
+            adapter.submitStats(e?.stats)
             if (e != null) {
                 val rx = e.stats.totalRxRate()
                 val tx = e.stats.totalTxRate()
@@ -161,6 +163,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             b.statusText.text = getString(R.string.status_stopped)
             b.rateText.text = ""
+            adapter.submitStats(null)
         }
     }
 }

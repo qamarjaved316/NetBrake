@@ -142,8 +142,15 @@ class VpnBrakeService : VpnService() {
     private fun applyNewRules() {
         val e = engine
         val curSet = RuleRepo.enabledPkgs().toSet()
+        // 一个应用都没启用就没有可管控的东西：彻底停服务。
+        // 仅 restartVpn() 会停掉引擎却不撤前台状态，留下一条
+        // running == false、引擎为 null 却仍在显示「NetBrake 运行中」的常驻通知。
+        if (curSet.isEmpty()) {
+            stopVpn()
+            return
+        }
         if (e == null) {
-            if (curSet.isNotEmpty()) startVpn()
+            startVpn()
             return
         }
         if (curSet == lastAppSet) {
@@ -152,7 +159,7 @@ class VpnBrakeService : VpnService() {
         }
         // 管控应用集合变化：重建（establish 的 allowed 列表无法动态修改）
         restartVpn()
-        if (engine == null && curSet.isNotEmpty()) startVpn()
+        startVpn()
     }
 
     /** 停引擎但保留服务存活，随后可立即重建。 */

@@ -40,7 +40,7 @@ class UdpFlow internal constructor(
 
     /** 由引擎创建后立即调用（在引擎读线程中）。 */
     fun start() {
-        engine.submit {
+        val kicked = engine.submit {
             try {
                 val sock = DatagramSocket(null)
                 engine.hub.prepareUdp(sock, rule.netMode)
@@ -52,13 +52,18 @@ class UdpFlow internal constructor(
                     }
                     socket = sock
                 }
-                startRecv(sock)
-                startUpWriter(sock)
+                // 收发泵任一起不来就没有人搬运数据，必须立即拆流而不是留一个空壳
+                if (!startRecv(sock) || !startUpWriter(sock)) destroy()
             } catch (_: Exception) {
                 // 无法建立（如强制 WiFi 但无 WiFi）：直接标记失败，丢弃该流的所有包
                 closed = true
                 engine.onFlowClosed(this)
             }
+        }
+        if (!kicked) {
+            // 线程池拒绝（池满或停机）：同样不能把流留在 engine.flows 里空转
+            closed = true
+            engine.onFlowClosed(this)
         }
     }
 
@@ -79,7 +84,7 @@ class UdpFlow internal constructor(
         if (dropped) engine.stats.addDrop(uid, 1)
     }
 
-    private fun startUpWriter(sock: DatagramSocket) {
+    private fun startUpWriter(sock: DatagramSocket): Boolean =
         engine.submit {
             try {
                 while (!closed) {
@@ -88,13 +93,19 @@ class UdpFlow internal constructor(
                         Thread.sleep(10)
                         continue
                     }
-                    // 整包等待令牌（minTake=d.len）：避免部分扣减后丢弃导致令牌泄漏
+                    // 整包等待令牌（minTake=d.len）：避免部分扣减后丢弃导致令牌泄漏。
+                    // 数据报大于桶容量时 acquire 内部会把 minTake 钳到容量，
+                    // 返回的 got 可能小于 d.len——数据报不可分片，照发即可，
+                    // 超出的部分由后续等待自然补偿，总吞吐仍受限速约束。
                     val got = upBucket.acquire(d.len, d.len, 500) { closed }
                     if (got <= 0) continue
                     try {
                         sock.send(DatagramPacket(d.data, d.len))
                     } catch (_: Exception) {
-                        break
+                        // 发送失败必须拆流：仅 break 会让流留在 engine.flows 里，
+                        // enqueueUp 继续往一个再也没人消费的队列里灌包
+                        destroy()
+                        return@submit
                     }
                     engine.stats.addTx(uid, d.len)
                     synchronized(this) {
@@ -105,9 +116,8 @@ class UdpFlow internal constructor(
             } catch (_: Exception) {
             }
         }
-    }
 
-    private fun startRecv(sock: DatagramSocket) {
+    private fun startRecv(sock: DatagramSocket): Boolean =
         engine.submit {
             val buf = ByteArray(MAX_DGRAM)
             try {
@@ -117,9 +127,11 @@ class UdpFlow internal constructor(
                     if (pkt.length <= 0) continue
                     lastActive = System.currentTimeMillis()
                     val len = pkt.length
-                    // 下行限速（阻塞式，形成对内核 socket 缓冲的背压）
+                    // 下行限速（阻塞式，形成对内核 socket 缓冲的背压）。
+                    // 判据只能是 got <= 0：数据报大于桶容量时 acquire 会把 minTake
+                    // 钳到容量，got < len 属正常情况，据此丢弃等于把整条流黑洞掉
                     val got = downBucket.acquire(len, len, 500) { closed }
-                    if (got < len) continue
+                    if (got <= 0) continue
                     var data = buf.copyOf(len)
                     // DNS 响应：删除 AAAA 记录，防止应用连 IPv6 进黑洞（表现为断网）
                     if (dstPort == 53) {
@@ -132,7 +144,6 @@ class UdpFlow internal constructor(
             } catch (_: Exception) {
             }
         }
-    }
 
     fun onTimer(now: Long) {
         if (closed) return

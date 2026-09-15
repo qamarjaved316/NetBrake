@@ -119,16 +119,21 @@ class Engine(
             if (newRule.enabled && newRule.netMode == NetMode.BLOCK) {
                 val prev = old[uid]
                 if (prev == null || !prev.enabled || prev.netMode != NetMode.BLOCK) {
-                    sessions.values.filter { it.uid == uid }.forEach { it.destroy() }
+                    sessions.values.filter { it.uid == uid }.forEach { it.kill() }
                     flows.values.filter { it.uid == uid }.forEach { it.destroy() }
                 }
             }
         }
 
-        // 限速 / 丢包 / 网络绑定热生效
+        // 限速 / 丢包 / 网络绑定热生效。
+        // uid <= 0 是 getConnectionOwnerUid 查询失败时按「保底放行」建立的会话，
+        // map 里必然查不到；不跳过就会在每次保存/删除/开关规则时把它们全部拆掉
+        // （与下面 UDP 分支的处理保持一致，也才符合 README 承诺的「不会断网」）。
         sessions.values.forEach { s ->
-            val r = map[s.uid]
-            if (r == null || !r.enabled) s.destroy() else s.applyRule(r)
+            if (s.uid > 0) {
+                val r = map[s.uid]
+                if (r == null || !r.enabled) s.kill() else s.applyRule(r)
+            }
         }
         flows.values.forEach { f ->
             val r = map[f.uid]
@@ -141,7 +146,7 @@ class Engine(
     /** 网络丢失：杀掉绑定该网络的会话，应用自动重连时走新网络。 */
     private fun killTransport(transport: Int) {
         val mode = if (transport == NetworkHub.TRANSPORT_WIFI) NetMode.WIFI else NetMode.CELLULAR
-        sessions.values.filter { it.rule.netMode == mode }.forEach { it.destroy() }
+        sessions.values.filter { it.rule.netMode == mode }.forEach { it.kill() }
         flows.values.filter { it.rule.netMode == mode }.forEach { it.destroy() }
     }
 

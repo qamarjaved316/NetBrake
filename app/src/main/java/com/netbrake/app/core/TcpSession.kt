@@ -95,9 +95,12 @@ class TcpSession internal constructor(
     private var lastProgress = 0L
     private var lastActivity = System.currentTimeMillis()
     private var dupAcks = 0
-    private var retransInFlight = false   // 快速重传已发出、等待 ACK 推进期间不再重复触发
+    // 快速重传已发出、等待 ACK 推进期间不再重复触发。
+    // TUN 读线程写、定时器线程读，必须 volatile。
+    @Volatile private var retransInFlight = false
     private var lastProbe = 0L
     private var lastTlp = 0L              // 上次 TLP 探测时间
+    private var lastOooPrune = 0L         // 上次乱序队列兜底清理时间
     @Volatile private var lastSacks: IntArray? = null   // 对端最近通告的 SACK 块
 
     /** 下行单泵：同一时刻只允许一个线程执行实际发送，防止 Seg 状态被并发推进。 */
@@ -132,8 +135,12 @@ class TcpSession internal constructor(
             return
         }
         if (t.flags and IpPacket.ACK != 0) onAck(t)
-        if (t.flags and IpPacket.FIN != 0) onFin(t)
+        // 顺序要求：数据必须先于 FIN 处理。带数据的 FIN（HTTP Connection: close、
+        // TLS close_notify+FIN 都是常态）其 finSeq = seq + payloadLen，
+        // 若先跑 onFin，此刻 rcvNxt 尚未吃进本段数据，finSeq != rcvNxt 两个分支都不成立，
+        // FIN 被静默丢弃，只能等对端重传 FIN——每条这类连接的拆除白白多一个 RTO。
         if (t.payloadLen > 0 && !appFinReceived) onData(t, buf)
+        if (t.flags and IpPacket.FIN != 0) onFin(t)
     }
 
     private fun onSyn(t: IpPacket.TcpHeader) {
@@ -169,7 +176,10 @@ class TcpSession internal constructor(
         appWindow = (t.window.toLong() shl appWsShift).toInt().coerceAtLeast(0)
         if (t.sacks != null) lastSacks = t.sacks
         val ack = t.ack
-        if (seqLt(sndUna, ack) && seqLeq(ack, sndNxt + 1)) {
+        // 上界是 sndNxt 而非 sndNxt+1：onSockEof 已把 FIN 占用的那个字节计入 sndNxt，
+        // FIN 的 ACK 恰好等于 sndNxt。放宽到 sndNxt+1 会接受一个越界 ACK，
+        // 使 sndUna 越过 sentNxt，(sentNxt - sndUna) 变负、发送窗口被虚增。
+        if (seqLt(sndUna, ack) && seqLeq(ack, sndNxt)) {
             val progressed = ack != sndUna
             sndUna = ack
             acknowledge(ack)
@@ -242,19 +252,58 @@ class TcpSession internal constructor(
             rcvQueue.add(Seg(rcvNxt, data, 0, len, 0))
             rcvBufLen += len
             rcvNxt += len
-            // 收割乱序队列中已连续的数据
-            while (true) {
-                val e = rcvOoo.ceilingEntry(rcvNxt) ?: break
-                if (e.key != rcvNxt) break
-                rcvQueue.add(Seg(rcvNxt, e.value, 0, e.value.size, 0))
-                rcvBufLen += e.value.size
-                rcvOooLen -= e.value.size
-                rcvNxt += e.value.size
-                rcvOoo.remove(e.key)
-            }
+            harvestOooLocked()
         }
         engine.stats.addTx(uid, len)
         sendControl(IpPacket.ACK, rcvNxt, rcvSackBlocks())
+    }
+
+    /**
+     * 收割乱序队列（调用方必须持有 this 锁）。
+     *
+     * 必须按「起点 <= rcvNxt < 终点」判定重叠而非要求起点精确等于 rcvNxt：
+     * app 侧 TCP 重传时分段方式常与首发不同（Linux 会把相邻段合并后重传，
+     * 一旦 upLossPct > 0 几乎必然发生），按序数据会把 rcvNxt 推过某个已缓存
+     * 乱序条目的起点。老实现只认 key == rcvNxt，这类条目从此无人认领，
+     * rcvOooLen 只增不减；而 advertisedWindow() = RCV_CAP - rcvBufLen - rcvOooLen，
+     * 通告窗口会单调缩到 0 并开始丢弃一切新数据——上行方向就此死锁且不可恢复。
+     */
+    private fun harvestOooLocked() {
+        while (rcvOoo.isNotEmpty()) {
+            val e = rcvOoo.firstEntry() ?: break
+            val start = e.key
+            val data = e.value
+            val end = start + data.size
+            if (seqLeq(end, rcvNxt)) {          // 整段已收：陈旧副本，直接清掉
+                rcvOoo.remove(start)
+                rcvOooLen -= data.size
+                continue
+            }
+            if (seqLt(rcvNxt, start)) break     // 前面还有洞，停止收割
+            val skip = rcvNxt - start           // 与已收区间的重叠部分
+            val take = data.size - skip
+            rcvQueue.add(Seg(rcvNxt, data, skip, take, 0))
+            rcvBufLen += take
+            rcvOooLen -= data.size              // 整条离开乱序队列
+            rcvNxt += take
+            rcvOoo.remove(start)
+        }
+    }
+
+    /**
+     * 清理完全落在已接收区间内的乱序条目（调用方必须持有 this 锁）。
+     * harvestOooLocked 已覆盖常规路径；此处兜底序号回绕期间 TreeMap 有序性
+     * 与序号空间不一致导致的残留，保证 rcvOooLen 不会永久性虚高。
+     */
+    private fun pruneOooLocked() {
+        val it = rcvOoo.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (seqLeq(e.key + e.value.size, rcvNxt)) {
+                rcvOooLen -= e.value.size
+                it.remove()
+            }
+        }
     }
 
     /** 计算上行乱序队列的 SACK 块（合并相邻区间，最多 3 块）。无乱序返回 null。 */
@@ -284,7 +333,7 @@ class TcpSession internal constructor(
     // =====================================================================
 
     private fun startConnector() {
-        engine.submit {
+        val kicked = engine.submit {
             try {
                 if (closed) return@submit
                 val sock = Socket()
@@ -303,8 +352,9 @@ class TcpSession internal constructor(
                     try { sock.close() } catch (_: Exception) {}
                     return@submit
                 }
-                startSockReader(sock)
-                startSockWriter(sock)
+                // 读写泵任一起不来都必须立即失败：SYN-ACK 早已发出，
+                // app 眼中连接已 ESTABLISHED，静默放弃会让它一直挂到 10 分钟空闲超时
+                if (!startSockReader(sock) || !startSockWriter(sock)) onSockBroken()
             } catch (_: Exception) {
                 if (!closed) {
                     sendRst()
@@ -312,9 +362,14 @@ class TcpSession internal constructor(
                 }
             }
         }
+        // 线程池拒绝（池满或停机）时同理：不能把 app 晾在一条永远不会有数据的连接上
+        if (!kicked && !closed) {
+            sendRst()
+            destroy()
+        }
     }
 
-    private fun startSockReader(sock: Socket) {
+    private fun startSockReader(sock: Socket): Boolean =
         engine.submit {
             val buf = ByteArray(64 * 1024)
             try {
@@ -335,9 +390,8 @@ class TcpSession internal constructor(
                 onSockBroken()
             }
         }
-    }
 
-    private fun startSockWriter(sock: Socket) {
+    private fun startSockWriter(sock: Socket): Boolean =
         engine.submit {
             try {
                 val output = sock.getOutputStream()
@@ -379,7 +433,6 @@ class TcpSession internal constructor(
             } catch (_: Exception) {
             }
         }
-    }
 
     // =====================================================================
     // 下行：socket -> TUN -> app
@@ -542,6 +595,11 @@ class TcpSession internal constructor(
             destroy()
             return
         }
+        // 兜底清理陈旧乱序条目（每秒一次，仅在队列非空时扫描）
+        if (now - lastOooPrune >= 1000) {
+            lastOooPrune = now
+            synchronized(this) { if (rcvOoo.isNotEmpty()) pruneOooLocked() }
+        }
         val needRetrans = synchronized(this) {
             ((sentNxt > sndUna) || (ourFinSent && !ourFinAcked)) &&
                     now - lastProgress >= rto && state == 2
@@ -550,6 +608,10 @@ class TcpSession internal constructor(
             rto = minOf(rto * 2, RTO_MAX)
             lastProgress = now
             lastTlp = now
+            // 超时即说明上一次重传（若有）也已丢失，必须解除在途标记：
+            // 否则快速重传（见 onAck）与下方 TLP 会被同一个标记双双锁死，
+            // 恢复退化为纯 RTO + 指数退避到 8s——正是 TLP 要避免的崩溃场景。
+            retransInFlight = false
             retransmit()
             return
         }
@@ -665,6 +727,17 @@ class TcpSession internal constructor(
         rule = newRule
         upBucket.rate = newRule.upLimitKBps * 1024L
         downBucket.rate = newRule.downLimitKBps * 1024L
+    }
+
+    /**
+     * 因规则变更、网络丢失等外部原因主动断开：先发 RST 再拆会话。
+     * 只 destroy 不发 RST 会让 app 的 socket 一直挂着（它不知道对端没了），
+     * 直到它自己的超时才失败。
+     */
+    fun kill() {
+        if (closed) return
+        sendRst()
+        destroy()
     }
 
     fun destroy() {
