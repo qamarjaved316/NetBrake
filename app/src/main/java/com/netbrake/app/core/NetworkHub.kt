@@ -8,6 +8,7 @@ import android.net.VpnService
 import com.netbrake.app.data.NetMode
 import java.io.IOException
 import java.net.DatagramSocket
+import java.net.InetSocketAddress
 import java.net.Socket
 
 /**
@@ -82,6 +83,12 @@ class NetworkHub(
      * 必须在 connect() 之前调用。失败抛 IOException。
      */
     fun prepareTcp(socket: Socket, netMode: Int) {
+        // 关键：java.net.Socket() 在 connect/bind 之前底层没有真正的 fd
+        // （AbstractPlainSocketImpl 延迟到 create() 才建），此时 protect() 拿到的是
+        // 无效 fd，必然返回 false，bindSocket() 同样无从生效。必须先 bind 一个
+        // 任意本地端口把 fd 建出来，protect 才有意义。
+        // DatagramSocket 无参构造会立即 bind，所以 UDP（DNS）一直正常，只有 TCP 全灭。
+        if (!socket.isBound) socket.bind(InetSocketAddress(0))
         when (netMode) {
             NetMode.WIFI -> {
                 val net = wifiNet ?: throw IOException("no wifi network")
