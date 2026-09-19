@@ -28,7 +28,16 @@ class Engine(
 ) {
     companion object {
         const val TOMBSTONE_MS = 30_000L
+        // UDP 失败 tombstone 只需盖过「应用逐包重发」的突发窗口；
+        // 瞬态网络故障的恢复由 onAvailable 清空兜底，不需要长 TTL
+        const val FLOW_TOMBSTONE_MS = 10_000L
         const val PROTO_ICMP = 1
+
+        /** IPv4 目的地址是否为组播（224.0.0.0/4）或受限广播（255.255.255.255）。 */
+        fun isMulticastOrBroadcast(dst: Int): Boolean {
+            val o1 = (dst ushr 24) and 0xFF
+            return o1 in 224..239 || dst == -1
+        }
     }
 
     data class ConnKey(val srcIp: Int, val srcPort: Int, val dstIp: Int, val dstPort: Int)
@@ -51,6 +60,9 @@ class Engine(
     private val flows = ConcurrentHashMap<ConnKey, UdpFlow>()
     private val tombstones = ConcurrentHashMap<ConnKey, TcpSession>()
 
+    /** 建立或发送失败被 tombstone 的 UDP 四元组（key -> 解禁时间戳）。 */
+    private val flowBlacklist = ConcurrentHashMap<ConnKey, Long>()
+
     @Volatile private var running = false
     private var readerThread: Thread? = null
     private var timerThread: Thread? = null
@@ -67,6 +79,9 @@ class Engine(
         running = true
         applyRules(initialRules)
         hub.onLost = { transport -> killTransport(transport) }
+        // 网络恢复：tombstone 里多是「无网络/不可达」时期的失败记录，
+        // 环境已变，全部放行，不让瞬态故障拖长恢复
+        hub.onAvailable = { flowBlacklist.clear() }
         readerThread = Thread({ readLoop() }, "nb-tun-read").apply {
             priority = Thread.MAX_PRIORITY - 1
             start()
@@ -77,11 +92,13 @@ class Engine(
     fun stop() {
         running = false
         hub.onLost = null
+        hub.onAvailable = null
         sessions.values.forEach { it.destroy() }
         flows.values.forEach { it.destroy() }
         sessions.clear()
         flows.clear()
         tombstones.clear()
+        flowBlacklist.clear()
         try { tunIn.close() } catch (_: Exception) {}
         try { tunOut.close() } catch (_: Exception) {}
         try { tun.close() } catch (_: Exception) {}
@@ -221,10 +238,20 @@ class Engine(
         }
 
         if (ip.proto == IpPacket.PROTO_UDP) {
+            // 组播/广播目的（mDNS/SSDP/广播发现）：引擎的转发 socket 既发不了广播
+            // （未开 SO_BROADCAST，send 必抛异常），也收不到应答（已连接 socket 会
+            // 过滤真实来源的回包，且局域网设备的组播通告根本不会进 TUN）。
+            // API 33+ 已由 excludeRoute 把这类流量留在物理网络，走不到这里；
+            // API < 33 时逐包建流-失败-拆流只会空转烧线程，直接黑洞。
+            if (isMulticastOrBroadcast(ip.dst)) return
             val u = IpPacket.parseUdp(buf, ip) ?: return
             val key = ConnKey(ip.src, u.srcPort, ip.dst, u.dstPort)
             var flow = flows[key]
             if (flow == null) {
+                // tombstone 期内不再建流：发往广播/不可达目的的包会被应用逐包重发，
+                // 没有这道闸就是逐包建流-失败-拆流空转烧线程
+                val banned = flowBlacklist[key]
+                if (banned != null && System.currentTimeMillis() < banned) return
                 val uid = lookupOwnerUid(IpPacket.PROTO_UDP, ip.src, u.srcPort, ip.dst, u.dstPort)
                 val rule = uidToRule(uid)
                 if (rule != null && rule.netMode == NetMode.BLOCK) return  // 断网黑洞
@@ -311,6 +338,7 @@ class Engine(
                 flows.values.forEach { it.onTimer(now) }
                 stats.tick()
                 tombstones.entries.removeIf { now - it.value.closedAt > TOMBSTONE_MS }
+                flowBlacklist.entries.removeIf { now > it.value }
             } catch (_: Exception) {
             }
             try {
@@ -328,6 +356,11 @@ class Engine(
 
     internal fun onFlowClosed(f: UdpFlow) {
         flows.remove(f.key)
+    }
+
+    /** UdpFlow 建立或发送失败：短时间内拒绝同四元组重建，把逐包失败空转压成低频重试。 */
+    internal fun markFlowFailed(key: ConnKey) {
+        flowBlacklist[key] = System.currentTimeMillis() + FLOW_TOMBSTONE_MS
     }
 
     fun activeSessionCount(): Int = sessions.size

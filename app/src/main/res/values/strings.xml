@@ -26,6 +26,8 @@
     <string name="preset_weak">弱网</string>
     <string name="preset_bad">恶劣</string>
     <string name="save">保存</string>
+    <!-- 首次把某应用纳入管控会触发 VPN 重建，所有受管控应用的现有连接都会被断开重连一次，提前说明免得误以为故障 -->
+    <string name="save_reconnect_hint">已添加管控，受管控应用的现有连接会重连一次</string>
     <string name="delete">删除规则</string>
     <string name="rate_now">实时 %1$s</string>
     <string name="unlimited">不限</string>

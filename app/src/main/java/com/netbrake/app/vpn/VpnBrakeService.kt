@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.IpPrefix
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -15,8 +16,10 @@ import androidx.core.app.NotificationCompat
 import com.netbrake.app.R
 import com.netbrake.app.core.Engine
 import com.netbrake.app.core.NetworkHub
+import com.netbrake.app.data.Rule
 import com.netbrake.app.data.RuleRepo
 import com.netbrake.app.ui.MainActivity
+import java.net.InetAddress
 
 /**
  * 前台 VpnService：为被管控应用建立本地 TUN，承载 [Engine]。
@@ -87,44 +90,38 @@ class VpnBrakeService : VpnService() {
             return
         }
 
-        val builder = Builder()
-            .setSession("NetBrake")
-            .setMtu(1500)
-            .addAddress("10.111.0.1", 32)
-            .addRoute("0.0.0.0", 0)
-            // IPv6 全部导入 TUN 后由引擎黑洞丢弃，防止应用用 v6 绕过管控
-            .addAddress("fd00:111:1::1", 128)
-            .addRoute("::", 0)
-            .setUnderlyingNetworks(null)
+        val dnsServers = systemDns()
 
-        for (d in systemDns()) builder.addDnsServer(d)
-
-        var ok = 0
-        for (r in enabled) {
-            try {
-                builder.addAllowedApplication(r.pkg)
-                ok++
-            } catch (_: Exception) {
-                // 应用已卸载等，跳过
-            }
-        }
-        if (ok == 0) {
-            stopSelf()
-            return
-        }
-
-        val fd: ParcelFileDescriptor = try {
-            builder.establish() ?: run {
-                // 用户拒绝了 VPN 授权
+        // API 33+ 用排除路由把组播/广播留在物理网络；个别 ROM 若在 establish()
+        // 阶段才拒绝这类路由，去掉排除整体重建重试一次，保证 VPN 至少回到
+        // 没有排除路由时（改动前）的可用性
+        var excludeMulticast = Build.VERSION.SDK_INT >= 33
+        var fd: ParcelFileDescriptor?
+        while (true) {
+            val builder = buildVpnInterface(enabled, dnsServers, excludeMulticast)
+            if (builder == null) {
                 stopSelf()
                 return
             }
-        } catch (_: Exception) {
+            var thrown = false
+            fd = try {
+                builder.establish()
+            } catch (_: Exception) {
+                thrown = true
+                null
+            }
+            // 只有异常才可能是排除路由所致，值得去掉排除重试；
+            // 返回 null 是授权被拒，重试也无济于事
+            if (fd != null || !thrown || !excludeMulticast) break
+            excludeMulticast = false
+        }
+        if (fd == null) {
+            // 用户拒绝了 VPN 授权，或接口建立失败
             stopSelf()
             return
         }
 
-        val h = NetworkHub(this, connectivityManager())
+        val h = NetworkHub(this, connectivityManager(), dnsServers)
         h.start()
         val e = Engine(this, fd, h, allRules)
         e.start()
@@ -136,6 +133,57 @@ class VpnBrakeService : VpnService() {
         startInForeground()
         notiHandler.removeCallbacks(notiUpdater)
         notiHandler.postDelayed(notiUpdater, 3000)
+    }
+
+    /** 组装 VPN 接口；一个可管控应用都没有时返回 null。 */
+    private fun buildVpnInterface(
+        enabled: List<Rule>,
+        dnsServers: List<String>,
+        excludeMulticast: Boolean
+    ): Builder? {
+        val builder = Builder()
+            .setSession("NetBrake")
+            .setMtu(1500)
+            .addAddress("10.111.0.1", 32)
+            .addRoute("0.0.0.0", 0)
+            // IPv6 全部导入 TUN 后由引擎黑洞丢弃，防止应用用 v6 绕过管控
+            .addAddress("fd00:111:1::1", 128)
+            .addRoute("::", 0)
+            .setUnderlyingNetworks(null)
+
+        // 局域网发现（mDNS/SSDP/受限广播）依赖收听局域网内其他设备的组播/广播通告，
+        // 这类包由内核本地投递、永不进 TUN，被管控应用因此在引擎侧永远「听不见」，
+        // 引擎代理转发也收不到应答（见 Engine.dispatch）。API 33+ 用 excludeRoute
+        // 把它们留在物理网络上原生收发，发现即恢复正常；代价是组播/广播流量不再
+        // 经过限速管控（局域网单播仍受管控）。API < 33 没有 excludeRoute，这类流量
+        // 仍会进 TUN，由引擎黑洞并对失败四元组 tombstone（见 Engine.dispatch）。
+        if (excludeMulticast) {
+            try {
+                // IpPrefix 版 excludeRoute 自 API 33 可用；(InetAddress, int) 重载要 34
+                builder.excludeRoute(IpPrefix(InetAddress.getByName("224.0.0.0"), 4))        // IPv4 组播（含 mDNS 224.0.0.251:5353、SSDP 239.255.255.250:1900）
+                builder.excludeRoute(IpPrefix(InetAddress.getByName("255.255.255.255"), 32)) // 受限广播
+                builder.excludeRoute(IpPrefix(InetAddress.getByName("ff00::"), 8))           // IPv6 组播
+            } catch (_: Exception) {
+            }
+        }
+
+        for (d in dnsServers) builder.addDnsServer(d)
+
+        var ok = 0
+        for (r in enabled) {
+            // 排除自身：NetBrake 进了 allowed 列表后 cm.activeNetwork 会指向 VPN 自己，
+            // NetworkHub 的「跟随系统」取网与 DNS 重映射都会失去物理网络前提，
+            // 且给自己的转发流量套限速只有自食其果
+            if (r.pkg == packageName) continue
+            try {
+                builder.addAllowedApplication(r.pkg)
+                ok++
+            } catch (_: Exception) {
+                // 应用已卸载等，跳过
+            }
+        }
+        if (ok == 0) return null
+        return builder
     }
 
     /** 规则变化：管控应用集合没变则热更新，否则重建 VPN。 */

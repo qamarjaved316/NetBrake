@@ -40,12 +40,14 @@ class UdpFlow internal constructor(
 
     /** 由引擎创建后立即调用（在引擎读线程中）。 */
     fun start() {
+        // netMode 快照：并发 applyRule 改了规则时，socket 绑定与 DNS 重映射必须用同一值
+        val mode = rule.netMode
         val kicked = engine.submit {
             var sock: DatagramSocket? = null
             try {
                 sock = DatagramSocket(null)
-                engine.hub.prepareUdp(sock, rule.netMode)
-                sock.connect(InetSocketAddress(IpPacket.ipToString(dstIp), dstPort))
+                engine.hub.prepareUdp(sock, mode)
+                sock.connect(InetSocketAddress(dnsUpstream(mode), dstPort))
                 synchronized(this) {
                     if (closed) {
                         try { sock.close() } catch (_: Exception) {}
@@ -58,6 +60,7 @@ class UdpFlow internal constructor(
             } catch (_: Exception) {
                 // 无法建立（如强制 WiFi 但无 WiFi）：直接标记失败，丢弃该流的所有包。
                 // DatagramSocket(null) 已经 createImpl() 拿到 fd，必须显式关闭
+                engine.markFlowFailed(key)
                 try { sock?.close() } catch (_: Exception) {}
                 closed = true
                 engine.onFlowClosed(this)
@@ -68,6 +71,40 @@ class UdpFlow internal constructor(
             closed = true
             engine.onFlowClosed(this)
         }
+    }
+
+    /**
+     * 出站 connect 的远端地址。DNS 上游重映射：VPN 下发给应用的 DNS 服务器是
+     * startVpn() 时刻从当时活动网络抓的快照，网络切换或规则绑定到另一个网络后，
+     * 快照服务器在出站网络上常常不可达（如 WiFi 路由器地址走蜂窝、运营商私网
+     * DNS 走 WiFi），DNS 全部超时，表现为应用「没网」。
+     * 重映射只针对「快照内 且 私网段」的地址——只有这类地址离开原网络后必然
+     * 不可达；公网 anycast DNS（含 systemDns 的兜底地址）在哪个网络都可达，
+     * 改连只会平白引入出站网络 DNS 的劫持面。应用自选的 DNS（公共 DNS、
+     * 局域网 Pi-hole、split-DNS）不在快照里，一律原样转发。快照地址在当前
+     * 出站网络 DNS 列表里时也保持原样（没切网或该服务器本来就好用）。
+     * 应答写回 TUN 时仍以应用请求的原地址作为源（见 startRecv 的 buildUdp），
+     * 应用视角不变。
+     */
+    private fun dnsUpstream(mode: Int): String {
+        val original = IpPacket.ipToString(dstIp)
+        if (dstPort != 53) return original
+        if (original !in engine.hub.vpnDnsServers) return original
+        if (!isNetworkSpecific(dstIp)) return original
+        val servers = engine.hub.dnsServersFor(mode)
+        if (servers.isEmpty() || original in servers) return original
+        return servers[0]
+    }
+
+    /** 私网 / CGNAT / 链路本地：仅在其原属网络内可达，切网后必然失效。 */
+    private fun isNetworkSpecific(ip: Int): Boolean {
+        val o1 = (ip ushr 24) and 0xFF
+        val o2 = (ip ushr 16) and 0xFF
+        return o1 == 10 ||
+                (o1 == 172 && o2 in 16..31) ||      // 172.16/12
+                (o1 == 192 && o2 == 168) ||         // 192.168/16
+                (o1 == 169 && o2 == 254) ||         // 169.254/16
+                (o1 == 100 && o2 in 64..127)        // 100.64/10
     }
 
     /** 上行：入队（引擎读线程调用）。已满则丢弃（模拟真实网络拥塞尾部丢包）。 */
@@ -106,7 +143,10 @@ class UdpFlow internal constructor(
                         sock.send(DatagramPacket(d.data, d.len))
                     } catch (_: Exception) {
                         // 发送失败必须拆流：仅 break 会让流留在 engine.flows 里，
-                        // enqueueUp 继续往一个再也没人消费的队列里灌包
+                        // enqueueUp 继续往一个再也没人消费的队列里灌包。
+                        // 同时把四元组 tombstone（广播目的、端口不可达等场景
+                        // 应用会逐包重发，没有它就是逐包建流-失败空转）
+                        engine.markFlowFailed(key)
                         destroy()
                         return@submit
                     }

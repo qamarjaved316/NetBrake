@@ -102,6 +102,9 @@ class RuleEditActivity : AppCompatActivity() {
         val downLoss = b.downLossSlider.value.toInt().coerceIn(0, 100)
         val upLoss = b.upLossSlider.value.toInt().coerceIn(0, 100)
 
+        // 首次纳入管控（之前没有该应用的规则）会改变 VPN 的 allowed 列表、触发重建，
+        // 该应用现有连接会被劫持并重连一次；提示一下免得被当成故障
+        val isNew = RuleRepo.byPkg(pkg) == null
         RuleRepo.upsert(
             Rule(
                 pkg = pkg,
@@ -114,7 +117,11 @@ class RuleEditActivity : AppCompatActivity() {
             )
         )
         VpnBrakeService.applyRules(this)
-        Toast.makeText(this, R.string.save, Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            this,
+            if (isNew) R.string.save_reconnect_hint else R.string.save,
+            Toast.LENGTH_SHORT
+        ).show()
         finish()
     }
 

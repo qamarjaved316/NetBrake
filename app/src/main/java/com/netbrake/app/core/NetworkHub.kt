@@ -17,7 +17,11 @@ import java.net.Socket
  */
 class NetworkHub(
     private val vpn: VpnService,
-    private val cm: ConnectivityManager
+    private val cm: ConnectivityManager,
+    /** startVpn 时通过 addDnsServer 下发给应用的 DNS 快照。
+     *  只有这组地址才可能因网络切换/换网失效，是 [com.netbrake.app.core.UdpFlow]
+     *  做 DNS 上游重映射的唯一判据；应用自选的 DNS 不在其中、永不动。 */
+    val vpnDnsServers: List<String>
 ) {
 
     @Volatile var wifiNet: Network? = null
@@ -25,11 +29,17 @@ class NetworkHub(
     @Volatile var cellNet: Network? = null
         private set
 
-    /** 网络丢失回调（transport -> 需要杀掉的连接类型）。 */
-    var onLost: ((transport: Int) -> Unit)? = null
+    /** 网络丢失回调（transport -> 需要杀掉的连接类型）。主线程写、回调线程读。 */
+    @Volatile var onLost: ((transport: Int) -> Unit)? = null
+
+    /** 任一被追踪网络重新可用（恢复不区分是哪个，调用方按全局处理）。 */
+    @Volatile var onAvailable: (() -> Unit)? = null
 
     private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) { wifiNet = network }
+        override fun onAvailable(network: Network) {
+            wifiNet = network
+            onAvailable?.invoke()
+        }
         override fun onLost(network: Network) {
             if (wifiNet == network) {
                 wifiNet = null
@@ -39,7 +49,10 @@ class NetworkHub(
     }
 
     private val cellCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) { cellNet = network }
+        override fun onAvailable(network: Network) {
+            cellNet = network
+            onAvailable?.invoke()
+        }
         override fun onLost(network: Network) {
             if (cellNet == network) {
                 cellNet = null
@@ -128,6 +141,28 @@ class NetworkHub(
             else -> {
                 if (!vpn.protect(socket)) throw IOException("protect failed")
             }
+        }
+    }
+
+    /**
+     * 按出站规则取对应物理网络当前可用的 DNS 服务器（仅 IPv4），用于把
+     * [vpnDnsServers] 里已经不可达的快照地址重映射到活网络。
+     * 跟随系统取默认网络；每次调用都实时读 LinkProperties，不依赖任何快照。
+     * 取不到时返回空列表，由调用方决定兜底方式。
+     */
+    fun dnsServersFor(netMode: Int): List<String> {
+        val net = when (netMode) {
+            NetMode.WIFI -> wifiNet
+            NetMode.CELLULAR -> cellNet
+            else -> try { cm.activeNetwork } catch (_: Exception) { null }
+        } ?: return emptyList()
+        return try {
+            cm.getLinkProperties(net)?.dnsServers
+                ?.filter { it.address.size == 4 }
+                ?.mapNotNull { it.hostAddress }
+                .orEmpty()
+        } catch (_: Exception) {
+            emptyList()
         }
     }
 
