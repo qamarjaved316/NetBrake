@@ -1,53 +1,54 @@
+
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">NetBrake</string>
-    <string name="app_subtitle">网络限速 · 丢包模拟 · 网络指定</string>
-    <string name="vpn_switch">启用管控</string>
-    <string name="status_stopped">未运行</string>
-    <string name="status_running">运行中 · 已管控 %1$d 个应用</string>
-    <string name="add_app">添加应用</string>
-    <string name="no_rules_hint">还没有管控任何应用\n点击「添加应用」开始</string>
-    <string name="search_app">搜索应用</string>
-    <string name="show_system">显示系统应用</string>
-    <string name="rule_edit_title">编辑规则</string>
-    <string name="net_default">跟随系统</string>
-    <string name="net_wifi">仅 WiFi</string>
-    <string name="net_cell">仅流量</string>
-    <string name="net_block">断网</string>
-    <string name="net_group">使用的网络</string>
-    <string name="down_limit">下载限速 (KB/s，0 = 不限)</string>
-    <string name="up_limit">上传限速 (KB/s，0 = 不限)</string>
-    <string name="down_loss">下载丢包率</string>
-    <string name="up_loss">上传丢包率</string>
-    <string name="presets">快速预设</string>
-    <string name="preset_free">不限速</string>
+    <string name="app_subtitle">Network Speed Limit · Packet Loss Simulation · Network Control</string>
+    <string name="vpn_switch">Enable Control</string>
+    <string name="status_stopped">Not Running</string>
+    <string name="status_running">Running · Controlling %1$d apps</string>
+    <string name="add_app">Add App</string>
+    <string name="no_rules_hint">No apps are being controlled yet\nTap "Add App" to get started</string>
+    <string name="search_app">Search Apps</string>
+    <string name="show_system">Show System Apps</string>
+    <string name="rule_edit_title">Edit Rule</string>
+    <string name="net_default">Follow System</string>
+    <string name="net_wifi">Wi-Fi Only</string>
+    <string name="net_cell">Mobile Data Only</string>
+    <string name="net_block">Block Internet</string>
+    <string name="net_group">Network Type</string>
+    <string name="down_limit">Download Limit (KB/s, 0 = Unlimited)</string>
+    <string name="up_limit">Upload Limit (KB/s, 0 = Unlimited)</string>
+    <string name="down_loss">Download Packet Loss</string>
+    <string name="up_loss">Upload Packet Loss</string>
+    <string name="presets">Quick Presets</string>
+    <string name="preset_free">Unlimited Speed</string>
     <string name="preset_2g">2G</string>
     <string name="preset_3g">3G</string>
-    <string name="preset_weak">弱网</string>
-    <string name="preset_bad">恶劣</string>
-    <string name="save">保存</string>
-    <!-- 首次把某应用纳入管控会触发 VPN 重建，所有受管控应用的现有连接都会被断开重连一次，提前说明免得误以为故障 -->
-    <string name="save_reconnect_hint">已添加管控，受管控应用的现有连接会重连一次</string>
-    <string name="delete">删除规则</string>
-    <string name="rate_now">实时 %1$s</string>
-    <string name="unlimited">不限</string>
+    <string name="preset_weak">Weak Network</string>
+    <string name="preset_bad">Very Poor Network</string>
+    <string name="save">Save</string>
+    <!-- Adding an app to control for the first time rebuilds the VPN. Existing connections of controlled apps will reconnect once. -->
+    <string name="save_reconnect_hint">Control added. Existing connections of controlled apps will reconnect once.</string>
+    <string name="delete">Delete Rule</string>
+    <string name="rate_now">Live %1$s</string>
+    <string name="unlimited">Unlimited</string>
     <string name="traffic_fmt">%1$s/s</string>
-    <string name="notification_channel">VPN 管控服务</string>
-    <string name="notification_title">NetBrake 运行中</string>
-    <string name="notification_text">正在管控 %1$d 个应用的网络</string>
-    <string name="vpn_permission_hint">首次开启时请在系统弹窗中点击「确定」允许 VPN 连接</string>
-    <string name="no_wifi">当前无 WiFi 网络，强制 WiFi 的应用将无法联网</string>
-    <string name="no_cell">当前无移动网络，强制流量的应用将无法联网</string>
+    <string name="notification_channel">VPN Control Service</string>
+    <string name="notification_title">NetBrake Running</string>
+    <string name="notification_text">Controlling network access for %1$d apps</string>
+    <string name="vpn_permission_hint">When prompted for the first time, tap "OK" to allow the VPN connection.</string>
+    <string name="no_wifi">No Wi-Fi network available. Apps set to Wi-Fi only cannot connect.</string>
+    <string name="no_cell">No mobile network available. Apps set to mobile data only cannot connect.</string>
     <string name="stats_fmt">↓%1$s ↑%2$s</string>
-    <!-- 每应用「实时速率 | 限速」：↓12KB/s|300KB/s  ↑3KB/s|不限 -->
-    <string name="rate_pair_fmt">↓%1$s|%2$s  ↑%3$s|%4$s</string>
+    <!-- Per-app "Live Speed | Limit": ↓12KB/s|300KB/s ↑3KB/s|Unlimited -->
+    <string name="rate_pair_fmt">↓%1$s|%2$s ↑%3$s|%4$s</string>
     <string name="rate_idle">—</string>
-    <string name="delete_action">删除</string>
-    <string name="rule_deleted">已删除「%1$s」的规则</string>
-    <string name="undo">撤销</string>
-    <string name="delete_confirm">删除该应用的管控规则？</string>
-    <string name="block_badge">已断网</string>
-    <string name="toast_add_app_first">请先添加要管控的应用</string>
-    <string name="loading_apps">正在加载应用列表…</string>
-    <string name="notification_text_with_rate">↓%1$s ↑%2$s · 已管控 %3$d 个应用</string>
+    <string name="delete_action">Delete</string>
+    <string name="rule_deleted">Rule for "%1$s" deleted</string>
+    <string name="undo">Undo</string>
+    <string name="delete_confirm">Delete this app's control rule?</string>
+    <string name="block_badge">Internet Blocked</string>
+    <string name="toast_add_app_first">Please add an app to control first.</string>
+    <string name="loading_apps">Loading app list…</string>
+    <string name="notification_text_with_rate">↓%1$s ↑%2$s · Controlling %3$d apps</string>
 </resources>
